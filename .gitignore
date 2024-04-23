@@ -1,6 +1,8 @@
-/bin/
-/build*/
+bin/
+build*/
 /.vs
 /nvapi/
 /donut-*
 /.vscode
+cmake-build-*/
+.idea/

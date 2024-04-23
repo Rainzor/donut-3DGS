@@ -42,10 +42,13 @@ private:
 public:
     using IRenderPass::IRenderPass;
 
+    /*
+     * 加载着色器文件，并创建着色器对象, 以及创建命令列表对象
+     */
     bool Init()
     {
         std::filesystem::path appShaderPath = app::GetDirectoryWithExecutable() / "shaders/basic_triangle" /  app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
-        
+
         auto nativeFS = std::make_shared<vfs::NativeFileSystem>();
         engine::ShaderFactory shaderFactory(GetDevice(), nativeFS, appShaderPath);
 
@@ -56,87 +59,106 @@ public:
         {
             return false;
         }
-        
+
         m_CommandList = GetDevice()->createCommandList();
 
         return true;
     }
-
+    /*
+     * 在窗口或视图缓冲区大小改变时重置管线对象
+     * */
     void BackBufferResizing() override
-    { 
+    {
         m_Pipeline = nullptr;
     }
-
+    /*
+     * 设置窗口标题
+     * */
     void Animate(float fElapsedTimeSeconds) override
     {
         GetDeviceManager()->SetInformativeWindowTitle(g_WindowTitle);
     }
-    
+    /*
+     * 渲染函数:创建或更新图形管线描述，设置渲染状态，清空颜色缓冲区，
+     *         执行绘制命令
+     * */
     void Render(nvrhi::IFramebuffer* framebuffer) override
     {
+        // 如果渲染管线未初始化，则进行初始化并设置管线的各种状态
         if (!m_Pipeline)
         {
             nvrhi::GraphicsPipelineDesc psoDesc;
             psoDesc.VS = m_VertexShader;
             psoDesc.PS = m_PixelShader;
-            psoDesc.primType = nvrhi::PrimitiveType::TriangleList;
+            psoDesc.primType = nvrhi::PrimitiveType::TriangleList;// 基本图元类型
             psoDesc.renderState.depthStencilState.depthTestEnable = false;
 
             m_Pipeline = GetDevice()->createGraphicsPipeline(psoDesc, framebuffer);
         }
 
+        // 命令开始
         m_CommandList->open();
 
+        // 清除帧缓冲区的颜色附件
         nvrhi::utils::ClearColorAttachment(m_CommandList, framebuffer, 0, nvrhi::Color(0.f));
 
+        // 配置当前的管线和帧缓冲区，并添加视口和裁剪矩形
         nvrhi::GraphicsState state;
         state.pipeline = m_Pipeline;
         state.framebuffer = framebuffer;
         state.viewport.addViewportAndScissorRect(framebuffer->getFramebufferInfo().getViewport());
-
+        // 设置渲染状态
         m_CommandList->setGraphicsState(state);
 
+        // 设置执行绘制命令的参数
         nvrhi::DrawArguments args;
         args.vertexCount = 3;
         m_CommandList->draw(args);
 
+        // 命令结束
         m_CommandList->close();
+
+        // 执行命令列表
         GetDevice()->executeCommandList(m_CommandList);
     }
 
 };
 
+// 初始化图形渲染环境，并控制程序的整体流程
 #ifdef WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 #else
 int main(int __argc, const char** __argv)
 #endif
 {
+    // dx12 as default
     nvrhi::GraphicsAPI api = app::GetGraphicsAPIFromCommandLine(__argc, __argv);
     app::DeviceManager* deviceManager = app::DeviceManager::Create(api);
 
     app::DeviceCreationParameters deviceParams;
 #ifdef _DEBUG
-    deviceParams.enableDebugRuntime = true; 
+    deviceParams.enableDebugRuntime = true;
     deviceParams.enableNvrhiValidationLayer = true;
 #endif
-
+    // 创建窗口设备和交换链
     if (!deviceManager->CreateWindowDeviceAndSwapChain(deviceParams, g_WindowTitle))
     {
         log::fatal("Cannot initialize a graphics device with the requested parameters");
         return 1;
     }
-    
+
     {
         BasicTriangle example(deviceManager);
         if (example.Init())
-        {
+        {   // 将example实例添加到渲染队列
             deviceManager->AddRenderPassToBack(&example);
+            // 运行一个消息循环，直到窗口关闭, 涉及到处理窗口事件（如关闭、大小调整等）和定期调用渲染函数。
             deviceManager->RunMessageLoop();
+            // 从渲染队列中移除example实例
             deviceManager->RemoveRenderPass(&example);
         }
     }
-    
+    // 关闭和清理设备管理器，释放所有相关资源
     deviceManager->Shutdown();
 
     delete deviceManager;
