@@ -20,6 +20,18 @@
 * DEALINGS IN THE SOFTWARE.
 */
 
+/*
+ *
+ * 绘制基本的三角形：
+ *
+ * 1. 加载着色器文件，并创建着色器对象
+ * 2. 初始化管线对象
+ * 3. 配置当前的管线和帧缓冲区，并添加视口和裁剪矩形
+ * 4. 设置执行绘制命令的参数
+ * 5. 创建DeviceManager对象，添加渲染队列，运行消息循环
+ *
+ * */
+
 #include <donut/app/ApplicationBase.h>
 #include <donut/engine/ShaderFactory.h>
 #include <donut/app/DeviceManager.h>
@@ -44,6 +56,7 @@ public:
 
     /*
      * 加载着色器文件，并创建着色器对象, 以及创建命令列表对象
+     * 没有关于设备申请，交换链，图像资源，同步等的操作
      */
     bool Init()
     {
@@ -73,7 +86,8 @@ public:
     }
     /*
      * 设置窗口标题
-     * */
+     *
+     */
     void Animate(float fElapsedTimeSeconds) override
     {
         GetDeviceManager()->SetInformativeWindowTitle(g_WindowTitle);

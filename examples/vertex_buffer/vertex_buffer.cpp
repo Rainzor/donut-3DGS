@@ -95,12 +95,14 @@ private:
     nvrhi::ShaderHandle m_VertexShader;
     nvrhi::ShaderHandle m_PixelShader;
     nvrhi::BufferHandle m_ConstantBuffer;
+
     nvrhi::BufferHandle m_VertexBuffer;
     nvrhi::BufferHandle m_IndexBuffer;
     nvrhi::TextureHandle m_Texture;
     nvrhi::InputLayoutHandle m_InputLayout;
     nvrhi::BindingLayoutHandle m_BindingLayout;
     nvrhi::BindingSetHandle m_BindingSets[c_NumViews];
+
     nvrhi::GraphicsPipelineHandle m_Pipeline;
     nvrhi::CommandListHandle m_CommandList;
     float m_Rotation = 0.f;
@@ -114,7 +116,7 @@ public:
     struct ConstantBufferEntry
     {
         dm::float4x4 viewProjMatrix;
-        float padding[16*3];
+        float padding[16*3];// 字节对齐256
     };
 
     static_assert(sizeof(ConstantBufferEntry) == nvrhi::c_ConstantBufferOffsetSizeAlignment, "sizeof(ConstantBufferEntry) must be 256 bytes");
@@ -125,7 +127,7 @@ public:
 
         std::filesystem::path frameworkShaderPath = app::GetDirectoryWithExecutable() / "shaders/framework" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
         std::filesystem::path appShaderPath = app::GetDirectoryWithExecutable() / "shaders/vertex_buffer" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
-        
+
 		std::shared_ptr<vfs::RootFileSystem> rootFS = std::make_shared<vfs::RootFileSystem>();
 		rootFS->mount("/shaders/donut", frameworkShaderPath);
 		rootFS->mount("/shaders/app", appShaderPath);
@@ -138,10 +140,14 @@ public:
         {
             return false;
         }
-
-        m_ConstantBuffer = GetDevice()->createBuffer(nvrhi::utils::CreateStaticConstantBufferDesc(sizeof(ConstantBufferEntry) * c_NumViews, "ConstantBuffer")
-            .setInitialState(nvrhi::ResourceStates::ConstantBuffer).setKeepInitialState(true));
-        
+        // Uniform buffer
+        m_ConstantBuffer = GetDevice()->createBuffer(nvrhi::utils::CreateStaticConstantBufferDesc(
+                                        sizeof(ConstantBufferEntry) * c_NumViews,
+                                        "ConstantBuffer")
+                                        .setInitialState(nvrhi::ResourceStates::ConstantBuffer)
+                                        .setKeepInitialState(true)
+                                        );
+        // Input layout
         nvrhi::VertexAttributeDesc attributes[] = {
             nvrhi::VertexAttributeDesc()
                 .setName("POSITION")
@@ -162,6 +168,7 @@ public:
         engine::CommonRenderPasses commonPasses(GetDevice(), shaderFactory);
         engine::TextureCache textureCache(GetDevice(), nativeFS, nullptr);
 
+        // 对VertexBuffer，IndexBuffer进行数据搬运
         m_CommandList = GetDevice()->createCommandList();
         m_CommandList->open();
 
@@ -187,6 +194,7 @@ public:
         m_CommandList->writeBuffer(m_IndexBuffer, g_Indices, sizeof(g_Indices));
         m_CommandList->setPermanentBufferState(m_IndexBuffer, nvrhi::ResourceStates::IndexBuffer);
 
+        // Load the texture
         std::filesystem::path textureFileName = app::GetDirectoryWithExecutable().parent_path() / "media/nvidia-logo.png";
         std::shared_ptr<engine::LoadedTexture> texture = textureCache.LoadTextureFromFile(textureFileName, true, nullptr, m_CommandList);
         m_Texture = texture->texture;
@@ -204,23 +212,40 @@ public:
         // The different binding sets use different slices of the same constant buffer.
         for (uint32_t viewIndex = 0; viewIndex < c_NumViews; ++viewIndex)
         {
+            /*  cbuffer CB : register(b0)
+                {
+                    float4x4 g_Transform;
+                };
+             *  Texture2D t_Texture : register(t0);
+             *  SamplerState s_Sampler : register(s0);
+             *
+             */
             nvrhi::BindingSetDesc bindingSetDesc;
             bindingSetDesc.bindings = {
                 // Note: using viewIndex to construct a buffer range.
-                nvrhi::BindingSetItem::ConstantBuffer(0, m_ConstantBuffer, nvrhi::BufferRange(sizeof(ConstantBufferEntry) * viewIndex, sizeof(ConstantBufferEntry))),
-                // Texutre and sampler are the same for all model views.
+                nvrhi::BindingSetItem::ConstantBuffer(0,
+                                                      m_ConstantBuffer,
+                                                      nvrhi::BufferRange(sizeof(ConstantBufferEntry) * viewIndex,
+                                                                                sizeof(ConstantBufferEntry))
+                                                      ),
+                // Texture and sampler are the same for all model views.
                 nvrhi::BindingSetItem::Texture_SRV(0, m_Texture),
                 nvrhi::BindingSetItem::Sampler(0, commonPasses.m_AnisotropicWrapSampler)
             };
 
             // Create the binding layout (if it's empty -- so, on the first iteration) and the binding set.
-            if (!nvrhi::utils::CreateBindingSetAndLayout(GetDevice(), nvrhi::ShaderType::All, 0, bindingSetDesc, m_BindingLayout, m_BindingSets[viewIndex]))
+            if (!nvrhi::utils::CreateBindingSetAndLayout(GetDevice(),
+                                                         nvrhi::ShaderType::All,
+                                                         0,
+                                                         bindingSetDesc,
+                                                         m_BindingLayout,
+                                                         m_BindingSets[viewIndex]))
             {
                 log::error("Couldn't create the binding set or layout");
                 return false;
             }
         }
-        
+
         return true;
     }
 
@@ -231,14 +256,14 @@ public:
     }
 
     void BackBufferResizing() override
-    { 
+    {
         m_Pipeline = nullptr;
     }
 
     void Render(nvrhi::IFramebuffer* framebuffer) override
     {
         const nvrhi::FramebufferInfoEx& fbinfo = framebuffer->getFramebufferInfo();
-
+        // 如果渲染管线未初始化，则进行初始化并设置管线的各种状态
         if (!m_Pipeline)
         {
             nvrhi::GraphicsPipelineDesc psoDesc;
@@ -253,15 +278,16 @@ public:
         }
 
         m_CommandList->open();
-
+        // 清除帧缓冲区的颜色附件
         nvrhi::utils::ClearColorAttachment(m_CommandList, framebuffer, 0, nvrhi::Color(0.f));
 
         // Fill out the constant buffer slices for multiple views of the model.
+        // 修改UniformBuffer的数据
         ConstantBufferEntry modelConstants[c_NumViews];
         for (uint32_t viewIndex = 0; viewIndex < c_NumViews; ++viewIndex)
         {
-            math::affine3 viewMatrix = math::rotation(normalize(g_RotationAxes[viewIndex]), m_Rotation) 
-                * math::yawPitchRoll(0.f, math::radians(-30.f), 0.f) 
+            math::affine3 viewMatrix = math::rotation(normalize(g_RotationAxes[viewIndex]), m_Rotation)
+                * math::yawPitchRoll(0.f, math::radians(-30.f), 0.f)
                 * math::translation(math::float3(0, 0, 2));
             math::float4x4 projMatrix = math::perspProjD3DStyle(math::radians(60.f), float(fbinfo.width) / float(fbinfo.height), 0.1f, 10.f);
             math::float4x4 viewProjMatrix = math::affineToHomogeneous(viewMatrix) * projMatrix;
@@ -269,12 +295,15 @@ public:
         }
 
         // Upload all constant buffer slices at once.
+        // 在外部修改UniformBuffer的数据，然后再上传到GPU
         m_CommandList->writeBuffer(m_ConstantBuffer, modelConstants, sizeof(modelConstants));
 
+        // 进行多视口绘制指令
         for (uint32_t viewIndex = 0; viewIndex < c_NumViews; ++viewIndex)
         {
             nvrhi::GraphicsState state;
             // Pick the right binding set for this view.
+            // m_BindingSets[viewIndex] 理解为 DescriptorSet 对象
             state.bindings = { m_BindingSets[viewIndex] };
             state.indexBuffer = { m_IndexBuffer, nvrhi::Format::R32_UINT, 0 };
             // Bind the vertex buffers in reverse order to test the NVRHI implementation of binding slots
@@ -282,10 +311,11 @@ public:
                 { m_VertexBuffer, 1, offsetof(Vertex, uv) },
                 { m_VertexBuffer, 0, offsetof(Vertex, position) }
             };
-            state.pipeline = m_Pipeline;
-            state.framebuffer = framebuffer;
+            state.pipeline = m_Pipeline;// 管线对象
+            state.framebuffer = framebuffer;// 帧缓冲区对象
 
             // Construct the viewport so that all viewports form a grid.
+            // 配置视口位置和裁剪矩形
             const float width = float(fbinfo.width) * 0.5f;
             const float height = float(fbinfo.height) * 0.5f;
             const float left = width * float(viewIndex % 2);
