@@ -20,6 +20,17 @@
 * DEALINGS IN THE SOFTWARE.
 */
 
+/*
+ * Deferred shading or deferred rendering aims to overcome these issues
+ * by drastically changing the way we render objects.
+ *
+ * This gives us several new options to significantly optimize scenes
+ * with large numbers of lights,
+ *
+ * allowing us to render hundreds (or even thousands) of lights
+ * with an acceptable framerate
+ *
+ * */
 #include <donut/app/ApplicationBase.h>
 #include <donut/app/DeviceManager.h>
 #include <donut/core/log.h>
