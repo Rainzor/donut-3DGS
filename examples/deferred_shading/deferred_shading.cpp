@@ -30,6 +30,15 @@
  * allowing us to render hundreds (or even thousands) of lights
  * with an acceptable framerate
  *
+ *
+ * G-Buffer 延迟渲染
+ *
+ * class SimpleScene
+ *      其中包含了：场景BVH，光照，材质，几何,实例化对象的创建方法
+ *
+ * 实例化是一种我们可以通过一次渲染调用一次绘制许多（相等的网格数据）对象的技术，
+ * 从而在每次需要渲染对象时节省所有 CPU -> GPU 通信。
+ *
  * */
 #include <donut/app/ApplicationBase.h>
 #include <donut/app/DeviceManager.h>
@@ -57,6 +66,7 @@ using namespace donut::render;
 
 static const char* g_WindowTitle = "Donut Example: Deferred Shading";
 
+// G-buffer 类
 class RenderTargets : public GBufferRenderTargets
 {
 public:
@@ -87,45 +97,91 @@ public:
 
 class SimpleScene
 {
+private:
+    // m_Buffers 用于管理顶点、索引、法向、纹理等数据
+    std::shared_ptr<BufferGroup> m_Buffers;
+    std::shared_ptr<Material> m_Material;
+    std::shared_ptr<MeshInfo> m_MeshInfo;
+    std::shared_ptr<MeshInstance> m_MeshInstance;
+    std::shared_ptr<SceneGraph> m_SceneGraph;
+
 public:
 
     bool Init(nvrhi::IDevice* device, nvrhi::ICommandList* commandList, TextureCache* textureCache)
     {
+        // 指令列表打开
         commandList->open();
 
         m_Buffers = std::make_shared<BufferGroup>();
+        // 索引缓冲区
         m_Buffers->indexBuffer = CreateGeometryBuffer(device, commandList, "IndexBuffer", g_Indices, sizeof(g_Indices), false);
 
+        // 顶点缓冲区
         uint64_t vertexBufferSize = 0;
-        m_Buffers->getVertexBufferRange(VertexAttribute::Position).setByteOffset(vertexBufferSize).setByteSize(sizeof(g_Positions)); vertexBufferSize += sizeof(g_Positions);
-        m_Buffers->getVertexBufferRange(VertexAttribute::TexCoord1).setByteOffset(vertexBufferSize).setByteSize(sizeof(g_TexCoords)); vertexBufferSize += sizeof(g_TexCoords);
-        m_Buffers->getVertexBufferRange(VertexAttribute::Normal).setByteOffset(vertexBufferSize).setByteSize(sizeof(g_Normals)); vertexBufferSize += sizeof(g_Normals);
-        m_Buffers->getVertexBufferRange(VertexAttribute::Tangent).setByteOffset(vertexBufferSize).setByteSize(sizeof(g_Tangents)); vertexBufferSize += sizeof(g_Tangents);
+        // 位置
+        m_Buffers->getVertexBufferRange(VertexAttribute::Position)
+                                        .setByteOffset(vertexBufferSize)
+                                        .setByteSize(sizeof(g_Positions));
+        vertexBufferSize += sizeof(g_Positions);
+        // 纹理坐标
+        m_Buffers->getVertexBufferRange(VertexAttribute::TexCoord1)
+                                        .setByteOffset(vertexBufferSize)
+                                        .setByteSize(sizeof(g_TexCoords));
+        vertexBufferSize += sizeof(g_TexCoords);
+        // 法向
+        m_Buffers->getVertexBufferRange(VertexAttribute::Normal)
+                                        .setByteOffset(vertexBufferSize)
+                                        .setByteSize(sizeof(g_Normals));
+        vertexBufferSize += sizeof(g_Normals);
+        // 切线
+        m_Buffers->getVertexBufferRange(VertexAttribute::Tangent)
+                                        .setByteOffset(vertexBufferSize)
+                                        .setByteSize(sizeof(g_Tangents));
+        vertexBufferSize += sizeof(g_Tangents);
         m_Buffers->vertexBuffer = CreateGeometryBuffer(device, commandList, "VertexBuffer", nullptr, vertexBufferSize, true);
 
+        // 设置顶点缓冲区的状态为CopyDest：拷贝目标
         commandList->beginTrackingBufferState(m_Buffers->vertexBuffer, nvrhi::ResourceStates::CopyDest);
-        commandList->writeBuffer(m_Buffers->vertexBuffer, g_Positions, sizeof(g_Positions), m_Buffers->getVertexBufferRange(VertexAttribute::Position).byteOffset);
-        commandList->writeBuffer(m_Buffers->vertexBuffer, g_TexCoords, sizeof(g_TexCoords), m_Buffers->getVertexBufferRange(VertexAttribute::TexCoord1).byteOffset);
-        commandList->writeBuffer(m_Buffers->vertexBuffer, g_Normals, sizeof(g_Normals), m_Buffers->getVertexBufferRange(VertexAttribute::Normal).byteOffset);
-        commandList->writeBuffer(m_Buffers->vertexBuffer, g_Tangents, sizeof(g_Tangents), m_Buffers->getVertexBufferRange(VertexAttribute::Tangent).byteOffset);
+        // 写入顶点数据
+        commandList->writeBuffer(m_Buffers->vertexBuffer,
+                                 g_Positions,
+                                 sizeof(g_Positions),
+                                 m_Buffers->getVertexBufferRange(VertexAttribute::Position).byteOffset);
+        commandList->writeBuffer(m_Buffers->vertexBuffer,
+                                 g_TexCoords,
+                                 sizeof(g_TexCoords),
+                                 m_Buffers->getVertexBufferRange(VertexAttribute::TexCoord1).byteOffset);
+        commandList->writeBuffer(m_Buffers->vertexBuffer,
+                                 g_Normals,
+                                 sizeof(g_Normals),
+                                 m_Buffers->getVertexBufferRange(VertexAttribute::Normal).byteOffset);
+        commandList->writeBuffer(m_Buffers->vertexBuffer,
+                                 g_Tangents,
+                                 sizeof(g_Tangents),
+                                 m_Buffers->getVertexBufferRange(VertexAttribute::Tangent).byteOffset);
+        // 设置顶点缓冲区的状态为VertexBuffer：顶点缓冲区
         commandList->setPermanentBufferState(m_Buffers->vertexBuffer, nvrhi::ResourceStates::VertexBuffer);
-        
+
+        // 创建实例化数据
         InstanceData instance{};
         instance.transform = math::float3x4(transpose(math::affineToHomogeneous(math::affine3::identity())));
         instance.prevTransform = instance.transform;
         m_Buffers->instanceBuffer = CreateGeometryBuffer(device, commandList, "VertexBufferTransform", &instance, sizeof(instance), true);
 
+        // 创建材质
         std::filesystem::path textureFileName = app::GetDirectoryWithExecutable().parent_path() / "media/nvidia-logo.png";
 
         m_Material = std::make_shared<Material>();
         m_Material->name = "CubeMaterial";
         m_Material->useSpecularGlossModel = true;
         m_Material->enableBaseOrDiffuseTexture = true;
-        m_Material->baseOrDiffuseTexture = textureCache->LoadTextureFromFile(textureFileName, true, nullptr, commandList);
+        // 加载纹理作为Diffuse数据（TextureHandle）
+        m_Material->baseOrDiffuseTexture = textureCache->LoadTextureFromFile(textureFileName, true, nullptr,
+                                                                             commandList);
         m_Material->materialConstants = CreateMaterialConstantBuffer(device, commandList, m_Material);
 
-        commandList->close();
-        device->executeCommandList(commandList);
+        commandList->close();// 指令列表关闭
+        device->executeCommandList(commandList);// 执行指令列表，加载场景
 
         if (!m_Material->baseOrDiffuseTexture->texture)
         {
@@ -133,27 +189,31 @@ public:
             return false;
         }
 
+        // 创建几何对象：顶点，索引，材质所组成的几何体
         auto geometry = std::make_shared<MeshGeometry>();
-        geometry->material = m_Material;
+        geometry->material = m_Material;// 实际材质数据
         geometry->numIndices = dim(g_Indices);
         geometry->numVertices = dim(g_Positions);
 
         m_MeshInfo = std::make_shared<MeshInfo>();
         m_MeshInfo->name = "CubeMesh";
-        m_MeshInfo->buffers = m_Buffers;
-        m_MeshInfo->objectSpaceBounds = math::box3(math::float3(-0.5f), math::float3(0.5f));;
+        m_MeshInfo->buffers = m_Buffers;// 实际几何数据
+        m_MeshInfo->objectSpaceBounds = math::box3(math::float3(-0.5f), math::float3(0.5f));// 几何体的包围盒
         m_MeshInfo->totalIndices = geometry->numIndices;
         m_MeshInfo->totalVertices = geometry->numVertices;
         m_MeshInfo->geometries.push_back(geometry);
 
+        // 创建场景图：根节点，叶子节点，光源节点
         m_SceneGraph = std::make_shared<SceneGraph>();
         auto node = std::make_shared<SceneGraphNode>();
         m_SceneGraph->SetRootNode(node);
 
+        //添加一个叶子节点
         m_MeshInstance = std::make_shared<MeshInstance>(m_MeshInfo);
         node->SetLeaf(m_MeshInstance);
         node->SetName("CubeNode");
 
+        // 添加一个光源节点
         std::shared_ptr<DirectionalLight> sunLight = std::make_shared<DirectionalLight>();
         m_SceneGraph->AttachLeafNode(node, sunLight);
 
@@ -184,13 +244,8 @@ public:
         return m_SceneGraph->GetLights();
     }
 
-private:
-    std::shared_ptr<BufferGroup> m_Buffers;
-    std::shared_ptr<Material> m_Material;
-    std::shared_ptr<MeshInfo> m_MeshInfo;
-    std::shared_ptr<MeshInstance> m_MeshInstance;
-    std::shared_ptr<SceneGraph> m_SceneGraph;
 
+private:
     nvrhi::BufferHandle CreateGeometryBuffer(nvrhi::IDevice* device, nvrhi::ICommandList* commandList, const char* debugName, const void* data, uint64_t dataSize, bool isVertexBuffer)
     {
         nvrhi::BufferHandle bufHandle;
@@ -280,13 +335,15 @@ public:
         m_CommonPasses = std::make_shared<CommonRenderPasses>(GetDevice(), m_ShaderFactory);
         m_BindingCache = std::make_unique<engine::BindingCache>(GetDevice());
 
+        // 创建DeferredLightingPass对象
         m_DeferredLightingPass = std::make_unique<DeferredLightingPass>(GetDevice(), m_CommonPasses);
         m_DeferredLightingPass->Init(m_ShaderFactory);
 
+        // 创建TextureCache, 用于加载纹理
         m_TextureCache = std::make_shared<TextureCache>(GetDevice(), nativeFS, nullptr);
-
         m_CommandList = GetDevice()->createCommandList();
 
+        // 初始化场景, 用于加载场景中的模型：顶点，索引，材质，颜色，法向, 光源等数据
         return m_Scene.Init(GetDevice(), m_CommandList, m_TextureCache.get());
     }
 
@@ -306,7 +363,7 @@ public:
         const nvrhi::FramebufferInfoEx& fbinfo = framebuffer->getFramebufferInfo();
 
         uint2 size = uint2(fbinfo.width, fbinfo.height);
-
+        // 创建一个RenderTargets对象
         if (!m_RenderTargets || any(m_RenderTargets->GetSize() != size))
         {
             m_RenderTargets = nullptr;
@@ -319,7 +376,7 @@ public:
             m_RenderTargets->Init(GetDevice(), size, 1, false, false);
         }
 
-        SetupView();
+        SetupView();// 设置动态变换矩阵
         
         if (!m_GBufferPass)
         {
@@ -332,6 +389,7 @@ public:
 
         m_RenderTargets->Clear(m_CommandList);
 
+        // 设置渲染数据
         render::DrawItem drawItem;
         drawItem.instance = m_Scene.GetMeshInstance().get();
         drawItem.mesh = drawItem.instance->GetMesh().get();
@@ -356,20 +414,20 @@ public:
             context,
             false);
 
-
+        // 设置灯光数据，利用前向渲染的方式，避免遮挡
         DeferredLightingPass::Inputs deferredInputs;
         deferredInputs.SetGBuffer(*m_RenderTargets);
         deferredInputs.ambientColorTop = 0.2f;
         deferredInputs.ambientColorBottom = deferredInputs.ambientColorTop * float3(0.3f, 0.4f, 0.3f);
         deferredInputs.lights = &m_Scene.GetLights();
         deferredInputs.output = m_RenderTargets->ShadedColor;
-        
+        // 渲染灯光
         m_DeferredLightingPass->Render(m_CommandList, m_View, deferredInputs);
 
         m_CommonPasses->BlitTexture(m_CommandList, framebuffer, m_RenderTargets->ShadedColor, m_BindingCache.get());
 
         m_CommandList->close();
-        GetDevice()->executeCommandList(m_CommandList);
+        GetDevice()->executeCommandList(m_CommandList);// 执行指令列表
     }
 };
 

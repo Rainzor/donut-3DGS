@@ -51,6 +51,7 @@ public:
 
         engine::ShaderFactory shaderFactory(GetDevice(), nativeFS, appShaderPath);
         m_AmplificationShader = shaderFactory.CreateShader("shaders.hlsl", "main_as", nullptr, nvrhi::ShaderType::Amplification);
+        // 创建一个Mesh着色器对象
         m_MeshShader = shaderFactory.CreateShader("shaders.hlsl", "main_ms", nullptr, nvrhi::ShaderType::Mesh);
         m_PixelShader = shaderFactory.CreateShader("shaders.hlsl", "main_ps", nullptr, nvrhi::ShaderType::Pixel);
 

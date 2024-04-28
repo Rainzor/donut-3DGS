@@ -123,15 +123,20 @@ public:
 
     bool Init()
     {
+        //  创建一个本地文件系统实例（nativeFS），用于加载本地文件如纹理等。
         auto nativeFS = std::make_shared<vfs::NativeFileSystem>();
 
+        //  获取和设置着色器路径：
+        //  frameworkShader和appShader的路径。这些路径依赖于执行文件的目录和图形API的类型。
         std::filesystem::path frameworkShaderPath = app::GetDirectoryWithExecutable() / "shaders/framework" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
         std::filesystem::path appShaderPath = app::GetDirectoryWithExecutable() / "shaders/vertex_buffer" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
 
+        // 创建根文件系统（rootFS），并将不同的着色器路径挂载到指定的虚拟路径上。
 		std::shared_ptr<vfs::RootFileSystem> rootFS = std::make_shared<vfs::RootFileSystem>();
 		rootFS->mount("/shaders/donut", frameworkShaderPath);
 		rootFS->mount("/shaders/app", appShaderPath);
 
+        // 创建shaderFactory实例，用于加载着色器文件并创建着色器对象。
         std::shared_ptr<engine::ShaderFactory> shaderFactory = std::make_shared<engine::ShaderFactory>(GetDevice(), rootFS, "/shaders");
         m_VertexShader = shaderFactory->CreateShader("app/shaders.hlsl", "main_vs", nullptr, nvrhi::ShaderType::Vertex);
         m_PixelShader = shaderFactory->CreateShader("app/shaders.hlsl", "main_ps", nullptr, nvrhi::ShaderType::Pixel);
@@ -140,14 +145,14 @@ public:
         {
             return false;
         }
-        // Uniform buffer
+        // Uniform buffer, 创建常量缓冲区
         m_ConstantBuffer = GetDevice()->createBuffer(nvrhi::utils::CreateStaticConstantBufferDesc(
                                         sizeof(ConstantBufferEntry) * c_NumViews,
                                         "ConstantBuffer")
                                         .setInitialState(nvrhi::ResourceStates::ConstantBuffer)
                                         .setKeepInitialState(true)
                                         );
-        // Input layout
+        // Input layout, 设置输入布局
         nvrhi::VertexAttributeDesc attributes[] = {
             nvrhi::VertexAttributeDesc()
                 .setName("POSITION")
@@ -164,10 +169,11 @@ public:
         };
         m_InputLayout = GetDevice()->createInputLayout(attributes, uint32_t(std::size(attributes)), m_VertexShader);
 
-
+        // 创建和管理命令列表
         engine::CommonRenderPasses commonPasses(GetDevice(), shaderFactory);
         engine::TextureCache textureCache(GetDevice(), nativeFS, nullptr);
 
+        //------------------------------- 场景加载 -------------------------------//
         // 对VertexBuffer，IndexBuffer进行数据搬运
         m_CommandList = GetDevice()->createCommandList();
         m_CommandList->open();
@@ -199,8 +205,8 @@ public:
         std::shared_ptr<engine::LoadedTexture> texture = textureCache.LoadTextureFromFile(textureFileName, true, nullptr, m_CommandList);
         m_Texture = texture->texture;
 
-        m_CommandList->close();
-        GetDevice()->executeCommandList(m_CommandList);
+        m_CommandList->close();// 关闭命令列表
+        GetDevice()->executeCommandList(m_CommandList);// 执行命令列表
 
         if (!texture->texture)
         {
@@ -210,6 +216,8 @@ public:
 
         // Create a single binding layout and multiple binding sets, one set per view.
         // The different binding sets use different slices of the same constant buffer.
+        // 根据c_NumViews，为view创建一个绑定集。
+        // 绑定集包含对常量缓冲区的引用，以及纹理和采样器的引用
         for (uint32_t viewIndex = 0; viewIndex < c_NumViews; ++viewIndex)
         {
             /*  cbuffer CB : register(b0)
